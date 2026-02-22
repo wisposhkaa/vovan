@@ -122,7 +122,7 @@ async def send_random_mix(channel):
     if len(words_database) < 5:
         return 
 
-    number_of_words = random.randint(3, 7)
+    number_of_words = random.randint(1, 7)
     random_words = random.sample(words_database, k=number_of_words)
     response_text = " ".join(random_words)
 
