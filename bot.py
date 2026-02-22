@@ -51,8 +51,9 @@ def upload_to_imgbb(image_url):
 @client.event
 async def on_ready():
     global background_task_started
-    print(f'Бот {client.user} успешно подключен к облаку и готов!')
-    print(f'В облаке: слов - {len(words_database)}, картинок - {len(images_database)}.')
+    # Добавляем flush=True в каждый принт
+    print(f'Бот {client.user} успешно подключен к облаку!', flush=True)
+    print(f'В облаке: слов - {len(words_database)}, картинок - {len(images_database)}.', flush=True)
     
     if not background_task_started and TARGET_CHANNEL_ID != 0:
         client.loop.create_task(random_message_loop())
@@ -132,4 +133,4 @@ async def send_random_mix(channel):
     await channel.send(response_text)
 
 keep_alive()
-client.run(TOKEN)
+client.run(TOKEN, log_handler=discord.utils.setup_logging())
