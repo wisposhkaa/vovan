@@ -1,86 +1,81 @@
 import discord
 import random
 import os
-import json
-import asyncio  # Новая библиотека для создания пауз (таймеров)
+import asyncio
+import requests # Библиотека для запросов к ImgBB
+from pymongo import MongoClient # Библиотека для работы с MongoDB
 from dotenv import load_dotenv
+from keep_alive import keep_alive
 
 load_dotenv()
-TOKEN = os.getenv('DISCORD_TOKEN')
 
-# НОВОЕ: ID канала, куда бот будет писать сам. Замени нули на свой ID!
-TARGET_CHANNEL_ID = 1198649196446761002
+# Достаем все настройки из файла .env
+TOKEN = os.getenv('DISCORD_TOKEN')
+TARGET_CHANNEL_ID = int(os.getenv('TARGET_CHANNEL_ID', 0))
+MONGO_URI = os.getenv('MONGO_URI')
+IMGBB_KEY = os.getenv('IMGBB_KEY')
 
 intents = discord.Intents.default()
 intents.message_content = True
-
 client = discord.Client(intents=intents)
 
-MEMORY_FILE = 'memory.json'
-IMAGES_FOLDER = 'images'
 MAX_IMAGES = 100
-
-os.makedirs(IMAGES_FOLDER, exist_ok=True)
-
-def load_memory():
-    if os.path.exists(MEMORY_FILE):
-        try:
-            with open(MEMORY_FILE, 'r', encoding='utf-8') as file:
-                return json.load(file)
-        except json.JSONDecodeError:
-            print("⚠️ Файл памяти был пуст или поврежден. Начинаем с чистой памяти.")
-            return {"words": [], "images": []}
-    else:
-        return {"words": [], "images": []}
-
-def save_memory(data):
-    with open(MEMORY_FILE, 'w', encoding='utf-8') as file:
-        json.dump(data, file, ensure_ascii=False, indent=4)
-
-bot_memory = load_memory()
-words_database = bot_memory["words"]
-images_database = bot_memory["images"]
-
-# Переменная, чтобы таймер не запустился дважды
 background_task_started = False
+
+# --- ПОДКЛЮЧЕНИЕ К ОБЛАЧНОЙ БАЗЕ ДАННЫХ MONGODB ---
+db_client = MongoClient(MONGO_URI)
+db = db_client["discord_bot_db"]
+collection = db["memory"]
+
+# Если бот запускается впервые, создаем для него пустую ячейку памяти
+if collection.count_documents({"_id": "memory_data"}) == 0:
+    collection.insert_one({"_id": "memory_data", "words": [], "images": []})
+
+# Загружаем память из облака при старте
+db_data = collection.find_one({"_id": "memory_data"})
+words_database = db_data.get("words", [])
+images_database = db_data.get("images", [])
+# --------------------------------------------------
+
+def upload_to_imgbb(image_url):
+    """Отправляет временную ссылку Discord в ImgBB и получает вечную ссылку"""
+    try:
+        payload = {"key": IMGBB_KEY, "image": image_url}
+        res = requests.post("https://api.imgbb.com/1/upload", data=payload)
+        if res.status_code == 200:
+            return res.json()['data']['url']
+    except Exception as e:
+        print(f"Ошибка загрузки картинки: {e}")
+    return None
 
 @client.event
 async def on_ready():
     global background_task_started
-    print(f'Бот {client.user} успешно запущен!')
-    print(f'В памяти: слов - {len(words_database)}, картинок - {len(images_database)}.')
+    print(f'Бот {client.user} успешно подключен к облаку и готов!')
+    print(f'В облаке: слов - {len(words_database)}, картинок - {len(images_database)}.')
     
-    # Запускаем наш таймер при старте бота
-    if not background_task_started:
+    if not background_task_started and TARGET_CHANNEL_ID != 0:
         client.loop.create_task(random_message_loop())
         background_task_started = True
 
-# --- НОВАЯ ФУНКЦИЯ: БЕСКОНЕЧНЫЙ ТАЙМЕР ---
 async def random_message_loop():
     await client.wait_until_ready()
-    # Находим канал по ID, который мы указали в начале файла
-    channel = client.get_channel(TARGET_CHANNEL_ID)
-    
+    try:
+        channel = client.get_channel(TARGET_CHANNEL_ID) or await client.fetch_channel(TARGET_CHANNEL_ID)
+    except Exception as e:
+        print(f"❌ ОШИБКА ДОСТУПА к каналу: {e}")
+        return
+
     if channel is None:
-        print("❌ ОШИБКА: Не могу найти канал! Проверь TARGET_CHANNEL_ID.")
+        print("❌ ОШИБКА: Не могу найти канал! Проверь TARGET_CHANNEL_ID в .env")
         return
 
     while not client.is_closed():
-        # Выбираем случайное время от 1 часа (3600 сек) до 5 часов (18000 сек)
-        # Для тестов можешь поменять на (10, 30) - от 10 до 30 секунд
         delay_seconds = random.randint(3600, 18000)
-        
-        # Переводим секунды в часы для удобного вывода в терминал
-        hours_to_wait = delay_seconds / 3600
-        print(f"[Таймер] Бот уснул. Следующее сообщение через {hours_to_wait:.2f} часов.")
-        
-        # Бот "спит" указанное время
+        print(f"[Таймер] Бот уснул. Следующее сообщение через {delay_seconds} сек.")
         await asyncio.sleep(delay_seconds)
-        
-        # Бот проснулся - отправляем сообщение!
-        print("[Таймер] Бот проснулся! Генерируем сообщение...")
+        print("[Таймер] Бот проснулся! Отправляем сообщение...")
         await send_random_mix(channel)
-# ------------------------------------------
 
 @client.event
 async def on_message(message):
@@ -91,48 +86,50 @@ async def on_message(message):
         await send_random_mix(message.channel)
         return
 
-    learned_something_new = False
+    words_updated = False
+    images_updated = False
 
+    # 1. СЛОВА -> В ПАМЯТЬ
     if message.content:
         words = message.content.split()
         words_database.extend(words)
-        learned_something_new = True
-        print(f"[Текст] Выучены новые слова. Всего: {len(words_database)}")
+        words_updated = True
+        print(f"[Текст] Выучены слова. В облаке будет: {len(words_database)}")
 
+    # 2. КАРТИНКИ -> В IMGBB
     for attachment in message.attachments:
         if attachment.content_type and attachment.content_type.startswith('image/'):
-            file_extension = attachment.filename.split('.')[-1]
-            file_path = f"{IMAGES_FOLDER}/{attachment.id}.{file_extension}"
-            await attachment.save(file_path)
-            images_database.append(file_path)
-            learned_something_new = True
-            print(f"[Картинка] Скачан новый файл. Всего картинок: {len(images_database)}")
+            # Загружаем картинку в облако и получаем вечную ссылку
+            permanent_url = upload_to_imgbb(attachment.url)
+            if permanent_url:
+                images_database.append(permanent_url)
+                images_updated = True
+                print(f"[Картинка] Загружена в ImgBB! Всего: {len(images_database)}")
 
-            if len(images_database) > MAX_IMAGES:
-                oldest_image_path = images_database.pop(0)
-                if os.path.exists(oldest_image_path):
-                    os.remove(oldest_image_path)
-                print(f"[Очистка] Удалена старая картинка.")
+                # Соблюдаем лимит в 100 ссылок
+                if len(images_database) > MAX_IMAGES:
+                    images_database.pop(0)
 
-    if learned_something_new:
-        save_memory({"words": words_database, "images": images_database})
+    # 3. СОХРАНЯЕМ ВСЁ В MONGODB ОДНИМ РАЗОМ
+    if words_updated or images_updated:
+        collection.update_one(
+            {"_id": "memory_data"},
+            {"$set": {"words": words_database, "images": images_database}}
+        )
 
 async def send_random_mix(channel):
     if len(words_database) < 5:
-        print("[Инфо] Слишком мало слов в памяти для генерации текста.")
         return 
 
-    number_of_words = random.randint(1, 11)
+    number_of_words = random.randint(3, 7)
     random_words = random.sample(words_database, k=number_of_words)
     response_text = " ".join(random_words)
 
     if images_database and random.choice([True, False]):
-        random_image_path = random.choice(images_database)
-        if os.path.exists(random_image_path):
-            picture = discord.File(random_image_path)
-            await channel.send(response_text, file=picture)
-            return
+        random_image_url = random.choice(images_database)
+        response_text += f"\n{random_image_url}"
 
     await channel.send(response_text)
 
+keep_alive()
 client.run(TOKEN)
