@@ -92,10 +92,17 @@ async def on_message(message):
 
     # 1. СЛОВА -> В ПАМЯТЬ
     if message.content:
-        words = message.content.split()
-        words_database.extend(words)
-        words_updated = True
-        print(f"[Текст] Выучены слова. В облаке будет: {len(words_database)}")
+        # Разбиваем сообщение на отдельные слова
+        all_words = message.content.split()
+        
+        # МАГИЯ ЗДЕСЬ: Оставляем только те слова, которые НЕ начинаются с '!'
+        clean_words = [word for word in all_words if not word.startswith('!')]
+        
+        # Если после фильтрации остались нормальные слова, сохраняем их
+        if clean_words:
+            words_database.extend(clean_words)
+            words_updated = True
+            print(f"[Текст] Выучены слова (без команд). В облаке будет: {len(words_database)}")
 
     # 2. КАРТИНКИ -> В IMGBB
     for attachment in message.attachments:
