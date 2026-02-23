@@ -86,6 +86,27 @@ async def on_message(message):
     if message.content.lower() == '!тест':
         await send_random_mix(message.channel)
         return
+    if message.content.lower().startswith('!забудь '):
+        # Вырезаем само слово из команды
+        word_to_forget = message.content[8:].strip()
+        
+        # Запоминаем, сколько слов было
+        old_length = len(words_database)
+        
+        # Перезаписываем память, выкидывая нужное слово (независимо от регистра букв)
+        words_database[:] = [w for w in words_database if w.lower() != word_to_forget.lower()]
+        
+        if len(words_database) < old_length:
+            # Если слово нашлось и удалилось, обновляем MongoDB
+            collection.update_one(
+                {"_id": "memory_data"},
+                {"$set": {"words": words_database}}
+            )
+            deleted_count = old_length - len(words_database)
+            await message.channel.send(f"🧹 Удалил слово '{word_to_forget}' из памяти (стерто {deleted_count} шт).")
+        else:
+            await message.channel.send(f"🤷 Я не помню, чтобы когда-то знал слово '{word_to_forget}'.")
+        return
 
     words_updated = False
     images_updated = False
@@ -103,6 +124,7 @@ async def on_message(message):
             words_database.extend(clean_words)
             words_updated = True
             print(f"[Текст] Выучены слова (без команд). В облаке будет: {len(words_database)}")
+            
 
     # 2. КАРТИНКИ -> В IMGBB
     for attachment in message.attachments:
