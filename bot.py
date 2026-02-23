@@ -72,7 +72,7 @@ async def random_message_loop():
         return
 
     while not client.is_closed():
-        delay_seconds = random.randint(3600, 18000)
+        delay_seconds = random.randint(1800, 2700)
         print(f"[Таймер] Бот уснул. Следующее сообщение через {delay_seconds} сек.")
         await asyncio.sleep(delay_seconds)
         print("[Таймер] Бот проснулся! Отправляем сообщение...")
